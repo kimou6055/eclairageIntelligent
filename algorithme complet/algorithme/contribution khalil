@@ -1,0 +1,265 @@
+#include <string.h>
+#include <ctype.h> //pour l'Hexa
+#include <SoftwareSerial.h>
+#define tentatives 4;
+#define messageErreur "999999999";
+#define id "103";
+#define RX RX_pin
+#define TX TX_pin
+#define SET_PIN 12
+
+const char *ID;
+const char *pere;
+char *channelPere;
+int compteurAux = 0;
+int AccuseReception = 0;
+char *requete;
+int condition; // condition de vérification du voltix
+typedef struct Meteo
+{
+  int temperature;
+  int humidite;
+  int luminosite;
+  int brouillard;
+
+} Meteo;
+
+typedef struct Lampe
+{
+
+  int luminosite;
+  int capteurMouvement;
+  int capteurBruit;
+
+} Lampe;
+
+int etatActivationCapteurs = 0;
+Meteo meteo;
+Lampe lampe;
+
+SoftwareSerial HC12(TX, RX); // HC-12 TX Pin, HC-12 RX Pin
+
+//----------------------------------------------------------------------------------------------Prototype fonction
+
+/**
+ * @brief select the channel for the lamp
+ *
+ * @return l'envoie de la commande vers la lampe
+ */
+void selectChannel()
+{
+  char *channel;
+
+  char command[7] = "AT+C";
+  do
+
+  {
+    Serial.println("give the channel for this lamp:");
+    channel = Serial.readString();
+  } while ((strlen(channel) != 3 || atoi(channel) > 122) || atoi(channel) < 0);
+
+  return sendcommand(strcat(command, channel));
+}
+
+/**
+ * @brief Set the commands of the HC12
+ *
+ * @param command la commande
+ */
+void sendcommand(String command)
+{
+  digitalWrite(SET_PIN, LOW);
+  delay(100);
+  hc12.print(command);
+  delay(100);
+  while (hc12.available())
+  {                            // If HC-12 has data (the AT Command response)
+    Serial.write(hc12.read()); // Send the data to Serial monitor
+  }
+  digitalWrite(SET_PIN, HIGH);
+  delay(100);
+}
+
+/**
+ * verif si lID est hexa ou pas
+ * @return 1 if Hexa
+ * @param ch l'ID a verifier
+ */
+int isHexa(char *ch)
+{
+  int test = 1;
+  for (int i = 0; i < strlen(ch); i++)
+  {
+    if (!isxdigit(ch[i]))
+      test = 0;
+  }
+  return test;
+}
+
+/**
+ * @brief Get the ID of the lamp,of the father and the channels for the lamp & father.
+ *
+ */
+void getInformations()
+{
+  Serial.begin(9600);
+  do
+  {
+    Serial.prinln("give the lamp's ID in hexadecimal:");
+    ID = Serial.readString();
+
+  } while ((strlen(ID) != 3) || !isHexa(ID));
+
+  do
+  {
+    Serial.prinln("give the lamp's father ID in hexadecimal:");
+    pere = Serial.readString();
+
+  } while ((strlen(pere) != 3) || !isHexa(pere));
+
+  do
+  {
+    Serial.prinln("give the lamp's father channel");
+    channelPere = Serial.readString();
+  } while ((strlen(channelPere != 3) || atoi(channelPere) > 122) || atoi(channelPere) < 0);
+
+  sendcommand("AT+FU4");
+  selectChannel();
+}
+
+/**
+ * @brief recevoir la requete
+ *  delay(2000)
+ * @return la reqtete
+ */
+char *recepteionRequete()
+{
+  char *rqt;
+  rqt = hc12.readString();
+  delay(2000);
+  return rqt;
+}
+
+/**
+ * @brief verifier la syntaxe de la requete
+ *
+ * @param rqt la requete a verifier
+ * @return 1 si la reqette est bien syntaxé
+ */
+int verifSyntax(char *rqt)
+{
+  int test = 1;
+  for (int i = 0; i < strlen(rqt); i++)
+  {
+    if (((!ishexa(rqt[i]) || rqt[i] != ';') || rqt[i] != '/') || (rqt[i] != ',' || rqt[i] != '.'))
+      test = 0;
+  }
+  return test;
+}
+
+/**
+ * @brief verifer le type de la requete
+ *
+ * @param rq la reqeute a verifier
+ * @return 1 si retour , 2 si envoie , 3 si ordre , 0 si erreur
+ */
+int verifTypeRqt(char *rq)
+{
+
+  if (strlen(rq) == 12 && isHexa(rq))
+    return 1;
+  if (rq[strlen(rq)] == '.')
+    return 2;
+  if ([strlen(rq) == 4 && ishexa(rq)])
+    return 3;
+  Serial.println("erreur lors de la verif type de requette");
+  return 0;
+}
+
+//------------------------------------------------------------------------------------------------------------------------------------------------
+
+void setup()
+{
+  getInformations();
+  Serial.begin(9600);
+  hc12.begin(1200);
+}
+
+void loop()
+{
+  interrupt(etatActivationCapteurs);
+
+  do
+  {
+    requete = recepteionRequete();
+    compteurAux++;
+  } while (!verifSyntax(requete) || compteurAux == tentatives);
+  compteurAux = 0;
+  switch (verifTypeRqt(requete))
+  {
+  case (1): // retour
+  {
+    if (isMessageErreur(requete))
+    {
+      envoiePere(requete);
+      break;
+    }
+    if (iAmVoltix(condition))
+    {
+      char *DonneSupplementaire = CollecteDonneSupplementaire(meteo);
+      // DonneSupplementaire codée sur 6 bits
+      strcat(requete, DonneSupplementaire);
+      // envoyer vers la constante pere
+    }
+    do
+    {
+      AccuseReception = envoiePere(requete);
+      compteurAux++;
+
+    } while (!AccuseReception || (compteurAux == tentatives));
+
+    if (compteurAux == tentatives)
+      envoiePere(id + messageErreur);
+    compteurAux = 0;
+    break;
+  }
+  case (2): // envoie
+  {
+    if (!verifATransmettre(requete))
+      decouperEtEnvoyer(requete);
+    supprimerEnTete(requete);
+
+    if (verifFinRequete(requete))
+      break;
+    TransmettreRequete(requete);
+    break;
+  }
+  case (3): // ordre
+  {
+    if (verifOrdreAllumage(requete))
+
+    {
+      lampe.luminosite = allumageLampe(requete);
+      char *retourDonnes = collecteDonnesLampe(lampe, retourCapteurs()); // il manque un control saisie
+
+      do
+      {
+        AccuseReception = envoiePere(retourDonnes);
+        compteurAux++;
+
+      } while (!AccuseReception || compteurAux == tentatives);
+
+      if (compteurAux == tentatives)
+        envoiePere(id + messageErreur);
+      compteurAux = 0;
+    }
+    if (verifOrdreCapteurs(requete))
+
+    {
+      etatActivationCapteurs = activationCapteurs(requete);
+    }
+
+    break;
+  }
+  }
+}
